@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Bring – Barcode Generator</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --green:    #4D8C2F;
+    --green-dk: #3C6E24;
+    --green-lt: #EBF4E4;
+    --black:    #1A1A1A;
+    --grey:     #F2F2F2;
+    --border:   #DDE8D5;
+    --muted:    #6B7B62;
+    --white:    #FFFFFF;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--grey);
+    color: var(--black);
+    font-family: 'Source Sans 3', 'Helvetica Neue', Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    -webkit-user-select: none;
+    user-select: none;
+    overflow: hidden;
+  }
+
+  main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    padding: 24px;
+    width: 100%;
+  }
+
+  /* ── Card ─────────────────── */
+  .card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-top: 4px solid var(--green);
+    border-radius: 6px;
+    padding: 36px 48px 32px;
+    width: 100%;
+    max-width: 640px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    box-shadow: 0 4px 24px rgba(77,140,47,0.08), 0 1px 4px rgba(0,0,0,0.04);
+    position: relative;
+    overflow: hidden;
+  }
+
+  canvas {
+    width: 100%;
+    max-width: 520px;
+    height: auto;
+    display: block;
+    image-rendering: crisp-edges;
+    image-rendering: pixelated;
+  }
+
+  .divider {
+    width: 100%;
+    height: 1px;
+    background: var(--green-lt);
+  }
+
+  .code-display {
+    font-size: clamp(1.7rem, 5.5vw, 2.5rem);
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    color: var(--black);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Button ─────────────────── */
+  .btn {
+    width: 100%;
+    max-width: 420px;
+    padding: 22px 0;
+    background: var(--green);
+    color: var(--white);
+    border: none;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: clamp(1rem, 3vw, 1.15rem);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 4px 20px rgba(77,140,47,0.3);
+    transition: background 0.12s, transform 0.08s, box-shadow 0.12s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }
+  .btn:hover  { background: var(--green-dk); }
+  .btn:active { transform: scale(0.97); box-shadow: 0 2px 8px rgba(77,140,47,0.15); }
+  .btn svg { width: 20px; height: 20px; }
+
+  /* ── Wake lock indicator — only shown when active ── */
+  .wake-indicator {
+    display: none; /* hidden by default, shown only when lock is active */
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: 0.03em;
+  }
+  .wake-indicator.visible { display: flex; }
+
+  .wake-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px rgba(77,140,47,0.5);
+    animation: blink 2.5s infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.35} }
+
+  /* ── Flash ─────────────────── */
+  .flash {
+    position: absolute;
+    inset: 0;
+    background: rgba(77,140,47,0.07);
+    animation: flashFade 0.45s ease-out forwards;
+    pointer-events: none;
+  }
+  @keyframes flashFade { from{opacity:1} to{opacity:0} }
+</style>
+</head>
+<body>
+
+<main>
+  <div class="card" id="card">
+    <canvas id="barcodeCanvas"></canvas>
+    <div class="divider"></div>
+    <div class="code-display" id="codeLabel">—</div>
+  </div>
+
+  <button class="btn" onclick="generate()">
+    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M10 3.5v13M3.5 10h13" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+    </svg>
+    New Barcode
+  </button>
+
+  <div class="wake-indicator" id="wakeIndicator">
+    <span class="wake-dot"></span>
+    <span>Screen stays on</span>
+  </div>
+</main>
+
+<script>
+// ── Wake Lock ─────────────────────────────────────
+let wakeLock = null;
+const indicator = document.getElementById('wakeIndicator');
+
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      indicator.classList.add('visible');
+      wakeLock.addEventListener('release', () => {
+        indicator.classList.remove('visible');
+      });
+    }
+    // If not supported: show nothing — no confusing message
+  } catch(e) {
+    // Silently fail — user doesn't need to know
+  }
+}
+
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible') await requestWakeLock();
+});
+
+requestWakeLock();
+
+// ── Code 128B Encoding ─────────────────────────────
+const CODE128B = {
+  ' ':0,'!':1,'"':2,'#':3,'$':4,'%':5,'&':6,"'":7,'(':8,')':9,
+  '*':10,'+':11,',':12,'-':13,'.':14,'/':15,'0':16,'1':17,'2':18,
+  '3':19,'4':20,'5':21,'6':22,'7':23,'8':24,'9':25,':':26,';':27,
+  '<':28,'=':29,'>':30,'?':31,'@':32,'A':33,'B':34,'C':35,'D':36,
+  'E':37,'F':38,'G':39,'H':40,'I':41,'J':42,'K':43,'L':44,'M':45,
+  'N':46,'O':47,'P':48,'Q':49,'R':50,'S':51,'T':52,'U':53,'V':54,
+  'W':55,'X':56,'Y':57,'Z':58,'[':59,'\\':60,']':61,'^':62,'_':63,
+  '`':64,'a':65,'b':66,'c':67,'d':68,'e':69,'f':70,'g':71,'h':72,
+  'i':73,'j':74,'k':75,'l':76,'m':77,'n':78,'o':79,'p':80,'q':81,
+  'r':82,'s':83,'t':84,'u':85,'v':86,'w':87,'x':88,'y':89,'z':90,
+  '{':91,'|':92,'}':93,'~':94
+};
+const PATTERNS = [
+  '11011001100','11001101100','11001100110','10010011000','10010001100',
+  '10001001100','10011001000','10011000100','10001100100','11001001000',
+  '11001000100','11000100100','10110011100','10011011100','10011001110',
+  '10111001100','10011101100','10011100110','11001110010','11001011100',
+  '11001001110','11011100100','11001110100','11101101110','11101001100',
+  '11100101100','11100100110','11101100100','11100110100','11100110010',
+  '11011011000','11011000110','11000110110','10100011000','10001011000',
+  '10001000110','10110001000','10001101000','10001100010','11010001000',
+  '11000101000','11000100010','10110111000','10110001110','10001101110',
+  '10111011000','10111000110','10001110110','11101110110','11010001110',
+  '11000101110','11011101000','11011100010','11011101110','11101011000',
+  '11101000110','11100010110','11101101000','11101100010','11100011010',
+  '11101111010','11001000010','11110001010','10100110000','10100001100',
+  '10010110000','10010000110','10000101100','10000100110','10110010000',
+  '10110000100','10011010000','10011000010','10000110100','10000110010',
+  '11000010010','11001010000','11110111010','11000010100','10001111010',
+  '10100111100','10010111100','10010011110','10111100100','10011110100',
+  '10011110010','11110100100','11110010100','11110010010','11011011110',
+  '11011110110','11110110110','10101111000','10100011110','10001011110',
+  '10111101000','10111100010','11110101000','11110100010','10111011110',
+  '10111101110','11101011110','11110101110','11010000100','11010010000',
+  '11010011100','1100011101011'
+];
+
+function encode128B(text) {
+  let bars = '11010010000';
+  let checksum = 104;
+  for (let i = 0; i < text.length; i++) {
+    const val = CODE128B[text[i]];
+    if (val === undefined) continue;
+    checksum += val * (i + 1);
+    bars += PATTERNS[val];
+  }
+  bars += PATTERNS[checksum % 103];
+  bars += PATTERNS[106];
+  return bars;
+}
+
+function drawBarcode(code) {
+  const canvas = document.getElementById('barcodeCanvas');
+  const bars = encode128B(code);
+  const mw = 3, h = 110, padX = 24;
+  canvas.width  = bars.length * mw + padX * 2;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, h);
+  ctx.fillStyle = '#111';
+  for (let i = 0; i < bars.length; i++) {
+    if (bars[i] === '1') ctx.fillRect(padX + i * mw, 0, mw, h);
+  }
+}
+
+function randomCode() {
+  let d = '';
+  for (let i = 0; i < 10; i++) d += Math.floor(Math.random() * 10);
+  return 'TU' + d;
+}
+
+function flashCard() {
+  const card = document.getElementById('card');
+  const old = card.querySelector('.flash');
+  if (old) old.remove();
+  const div = document.createElement('div');
+  div.className = 'flash';
+  card.appendChild(div);
+  setTimeout(() => div.remove(), 500);
+}
+
+function generate() {
+  const code = randomCode();
+  document.getElementById('codeLabel').textContent = code;
+  drawBarcode(code);
+  flashCard();
+}
+
+generate();
+</script>
+</body>
+</html>
